@@ -11,7 +11,6 @@
       color: white;
       font-family: Arial, sans-serif;
     }
-    /* Style for the tab buttons */
     .tab {
       display: inline-block;
       padding: 10px 20px;
@@ -28,7 +27,6 @@
     .tab.active {
       background-color: #555;
     }
-    /* Container for the games */
     .tab-content {
       display: none;
       margin-top: 20px;
@@ -46,36 +44,28 @@
 </head>
 <body>
   <h1>Game Hub</h1>
-  <!-- Tab Buttons -->
   <div id="tabs">
     <button class="tab active" data-tab="pong">Pong</button>
     <button class="tab" data-tab="snake">Snake</button>
-    <!-- Add more buttons here for additional games -->
   </div>
   
-  <!-- Tab Content Sections -->
   <div id="gameContainer">
-    <!-- Each game is loaded in an iframe for isolation -->
     <div id="pong" class="tab-content active">
-      <iframe src="pong.html" width="800" height="400"></iframe>
+      <iframe src="pong.html" width="1000" height="600"></iframe>
     </div>
     <div id="snake" class="tab-content">
-      <iframe src="snake.html" width="800" height="400"></iframe>
+      <iframe src="snake.html" width="1000" height="600"></iframe>
     </div>
   </div>
   
-  <!-- Script to handle tab switching -->
   <script>
     const tabs = document.querySelectorAll('.tab');
     const tabContents = document.querySelectorAll('.tab-content');
     
     tabs.forEach(tab => {
       tab.addEventListener('click', () => {
-        // Remove active class from all tabs and contents
         tabs.forEach(t => t.classList.remove('active'));
         tabContents.forEach(c => c.classList.remove('active'));
-        
-        // Add active class to the clicked tab and corresponding content section
         tab.classList.add('active');
         document.getElementById(tab.getAttribute('data-tab')).classList.add('active');
       });
