@@ -1,0 +1,1060 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Planet Defense Game</title>
+  <style>
+    /* Overall container for 1920x1080 view */
+    #container {
+      position: relative;
+      width: 1920px;
+      height: 1080px;
+      margin: 0 auto;
+      background: #000;
+    }
+    /* Center the game canvas (1080x1080) */
+    #gameCanvas {
+      position: absolute;
+      left: 420px;  /* (1920 - 1080)/2 = 420 */
+      top: 0;
+      width: 1080px;
+      height: 1080px;
+      background: #111;
+      border: 2px solid #fff;
+    }
+    /* Stats panel on the left */
+    #ui {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 420px;
+      height: 1080px;
+      background: #222;
+      color: #fff;
+      padding: 20px;
+      box-sizing: border-box;
+      font-size: 18px;
+      overflow-y: auto;
+    }
+    /* Upgrade menu on the right */
+    #upgradeMenu {
+      position: absolute;
+      right: 0;
+      top: 0;
+      width: 420px;
+      height: 1080px;
+      background: rgba(0, 0, 0, 0.85);
+      color: #fff;
+      padding: 20px;
+      box-sizing: border-box;
+      font-size: 18px;
+      display: none;
+      overflow-y: auto;
+    }
+    /* Semi-transparent overlay for the year end message */
+    #overlayMessage {
+      position: absolute;
+      left: 420px;
+      top: 0;
+      width: 1080px;
+      height: 1080px;
+      background: rgba(0, 0, 0, 0.5);
+      text-align: center;
+      padding-top: 50px;
+      font-size: 36px;
+      color: #fff;
+      z-index: 15;
+      display: none;
+    }
+    /* Start Game overlay button */
+    #overlayButton {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      padding: 20px 30px;
+      font-size: 20px;
+      cursor: pointer;
+      z-index: 20;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="ui"></div>
+    <canvas id="gameCanvas"></canvas>
+    <div id="upgradeMenu">
+      <h2>Upgrade Your Defenses</h2>
+      <div id="shardDisplay"></div>
+      <div id="upgradeOptions"></div>
+      <button id="nextYearButton">Start Next Year</button>
+    </div>
+    <div id="overlayMessage"></div>
+    <button id="overlayButton">Start Game</button>
+  </div>
+  <script>
+    /****************** CONFIGURABLE PARAMETERS ******************/
+    const config = {
+      canvasWidth: 1080,
+      canvasHeight: 1080,
+      // Planet settings.
+      planet: {
+        radius: 50,
+        maxHealth: 100,
+        fragmentCount: 30,
+        fragmentLife: 4000,
+        fragmentSpeed: { min: 1, max: 3 }
+      },
+      // Moon settings.
+      moon: {
+        radius: 15,
+        orbitRadius: 100,
+        speed: 0.02
+      },
+      // Game progression.
+      orbitsPerYear: 36,
+      baseAsteroidSpawnInterval: 1000,
+      minAsteroidSpawnInterval: 400,
+      // Asteroid settings.
+      asteroid: {
+        speedRange: [0.5, 1.5],
+        sizeRange: [15, 25]
+      },
+      // Reticle settings.
+      reticle: {
+        duration: 500,
+        effectiveRadius: 40
+      },
+      // Debris settings.
+      debris: {
+        duration: 1000
+      },
+      // Moon rebuild settings.
+      rebuild: {
+        requiredClicks: 10,
+        duration: 15000
+      },
+      // Screen shake.
+      shake: {
+        asteroidHit: 5,
+        planetHit: 15
+      },
+      // Explosion effect.
+      explosion: {
+        baseParticles: 20,
+        planetHitMultiplier: 1.5
+      },
+      // Star settings.
+      stars: {
+        count: 100
+      },
+      // Comet settings.
+      comet: {
+        spawnProbability: 0.0002,
+        speedRange: [4, 6],
+        lengthRange: [30, 50],
+        life: 2000
+      },
+      // Upgrade costs.
+      upgrades: {
+        restoreHealthCostPerPoint: 1,
+        increaseMaxHealthCost: 50,
+        increaseMaxHealthBonus: 20,
+        buyShieldCost: 100,
+        restoreShieldCost: 50,
+        buyCannonCost: 25
+      },
+      // Cannon settings.
+      cannon: {
+        cooldownTime: 5000,
+        range: 150,
+        hitThreshold: 20,
+        targetingDelay: 300
+      }
+    };
+    /**************************************************************/
+
+    // Canvas and UI setup.
+    const canvas = document.getElementById("gameCanvas");
+    canvas.width = config.canvasWidth;
+    canvas.height = config.canvasHeight;
+    const ctx = canvas.getContext("2d");
+    const WIDTH = canvas.width;
+    const HEIGHT = canvas.height;
+    const overlayButton = document.getElementById("overlayButton");
+    const upgradeMenu = document.getElementById("upgradeMenu");
+    const overlayMessage = document.getElementById("overlayMessage");
+    const shardDisplay = document.getElementById("shardDisplay");
+    const upgradeOptionsDiv = document.getElementById("upgradeOptions");
+    const nextYearButton = document.getElementById("nextYearButton");
+    const uiDiv = document.getElementById("ui");
+
+    // Possible game states:
+    // "start", "playing", "moonRebuild", "yearEnd", "upgrading", "exploding", "gameover"
+    let gameState = "start";
+    let currentYear = 1;
+    let moonOrbitCount = 0;
+    let asteroidSpawnInterval = config.baseAsteroidSpawnInterval;
+    let score = 0;
+    let shards = 0;
+
+    // Screen shake.
+    let shakeIntensity = 0;
+    function updateShake(deltaTime) {
+      shakeIntensity *= Math.pow(0.9, deltaTime / 16);
+    }
+    function applyShake() {
+      if (shakeIntensity > 0.5) {
+        const dx = (Math.random() - 0.5) * shakeIntensity;
+        const dy = (Math.random() - 0.5) * shakeIntensity;
+        ctx.translate(dx, dy);
+      }
+    }
+
+    // Planet and health.
+    const planet = { x: WIDTH / 2, y: HEIGHT / 2, radius: config.planet.radius };
+    let planetMaxHealth = config.planet.maxHealth;
+    let planetHealth = planetMaxHealth;
+
+    // Moon.
+    const moonOriginal = { 
+      radius: config.moon.radius, 
+      orbitRadius: config.moon.orbitRadius, 
+      speed: config.moon.speed 
+    };
+    let moon = { 
+      radius: moonOriginal.radius, 
+      orbitRadius: moonOriginal.orbitRadius, 
+      angle: 0, 
+      speed: moonOriginal.speed 
+    };
+    let previousMoonAngle = moon.angle;
+
+    // Moon rebuild tracking.
+    let moonRebuildProgress = 0;
+    let moonRebuildTime = 0;
+
+    // Shield and cannons.
+    let shield = null; // e.g. { health:100, maxHealth:100, cannons:[] }
+    const shieldOffset = 80;
+
+    // Collections.
+    const asteroids = [];
+    const debrisPieces = [];
+    const reticles = [];
+    const explosions = [];
+    const stars = [];
+    const comets = [];
+    let planetFragments = [];
+
+    let lastTime = 0;
+    let asteroidTimer = 0;
+
+    // Create stars.
+    for (let i = 0; i < config.stars.count; i++) {
+      stars.push({
+        x: Math.random() * WIDTH,
+        y: Math.random() * HEIGHT,
+        brightness: Math.random() * 0.5 + 0.5,
+        flickerSpeed: Math.random() * 0.005 + 0.002
+      });
+    }
+
+    // Helper: random number.
+    function random(min, max) {
+      return Math.random() * (max - min) + min;
+    }
+
+    // Generate an irregular polygon for an asteroid.
+    function generateAsteroidShape(radius) {
+      const points = [];
+      const numPoints = Math.floor(random(6, 10));
+      for (let i = 0; i < numPoints; i++) {
+        const angle = (i / numPoints) * Math.PI * 2;
+        const r = radius * random(0.7, 1.3);
+        points.push({ x: r * Math.cos(angle), y: r * Math.sin(angle) });
+      }
+      return points;
+    }
+
+    // Spawn an asteroid off-screen.
+    function spawnAsteroid() {
+      const edge = Math.floor(random(0, 4));
+      let x, y;
+      if (edge === 0) { x = random(-50, WIDTH + 50); y = -50; }
+      else if (edge === 1) { x = WIDTH + 50; y = random(-50, HEIGHT + 50); }
+      else if (edge === 2) { x = random(-50, WIDTH + 50); y = HEIGHT + 50; }
+      else { x = -50; y = random(-50, HEIGHT + 50); }
+      const dx = planet.x - x;
+      const dy = planet.y - y;
+      const angle = Math.atan2(dy, dx);
+      const speed = random(config.asteroid.speedRange[0], config.asteroid.speedRange[1]);
+      const baseRadius = random(config.asteroid.sizeRange[0], config.asteroid.sizeRange[1]);
+      asteroids.push({
+        x, y,
+        radius: baseRadius,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        shape: generateAsteroidShape(baseRadius),
+        angle: random(0, Math.PI * 2),
+        angularVelocity: random(-0.02, 0.02)
+      });
+    }
+
+    // Add pulsating reticle at click location.
+    function addReticle(x, y) {
+      reticles.push({ x, y, elapsed: 0, duration: config.reticle.duration });
+    }
+
+    // Shatter an asteroid into debris.
+    function shatterAsteroid(asteroid) {
+      shakeIntensity += config.shake.asteroidHit;
+      score += 10;
+      shards += 10;
+      const numFragments = Math.floor(random(3, 7));
+      for (let i = 0; i < numFragments; i++) {
+        debrisPieces.push({
+          x: asteroid.x,
+          y: asteroid.y,
+          vx: asteroid.vx + random(-1, 1),
+          vy: asteroid.vy + random(-1, 1),
+          shape: asteroid.shape,
+          angle: asteroid.angle,
+          angularVelocity: asteroid.angularVelocity + random(-0.05, 0.05),
+          scale: 1,
+          duration: config.debris.duration,
+          elapsed: 0
+        });
+      }
+    }
+
+    // Explosion effect (asteroid or planet collision).
+    function createExplosion(x, y, power = 1) {
+      const numParticles = Math.floor(config.explosion.baseParticles * power);
+      for (let i = 0; i < numParticles; i++) {
+        explosions.push({
+          x, y,
+          vx: random(-3, 3) * power,
+          vy: random(-3, 3) * power,
+          radius: random(2, 4) * power,
+          life: random(500, 1000),
+          elapsed: 0,
+          color: "#f39c12"
+        });
+      }
+    }
+
+    // Generate planet fragments for planet's final explosion.
+    function generatePlanetFragments() {
+      planetFragments = [];
+      for (let i = 0; i < config.planet.fragmentCount; i++) {
+        const angle = random(0, Math.PI * 2);
+        const speed = random(config.planet.fragmentSpeed.min, config.planet.fragmentSpeed.max);
+        planetFragments.push({
+          x: planet.x,
+          y: planet.y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          radius: random(5, 15),
+          life: config.planet.fragmentLife,
+          elapsed: 0,
+          angle: angle,
+          angularVelocity: random(-0.05, 0.05)
+        });
+      }
+    }
+
+    // Update planet fragments (post-explosion).
+    function updatePlanetFragments(deltaTime) {
+      for (let i = planetFragments.length - 1; i >= 0; i--) {
+        const frag = planetFragments[i];
+        frag.x += frag.vx;
+        frag.y += frag.vy;
+        frag.angle += frag.angularVelocity;
+        frag.elapsed += deltaTime;
+        if (frag.elapsed > frag.life) {
+          planetFragments.splice(i, 1);
+        }
+      }
+    }
+    function drawPlanetFragments() {
+      planetFragments.forEach(frag => {
+        const alpha = 1 - (frag.elapsed / frag.life);
+        ctx.save();
+        ctx.translate(frag.x, frag.y);
+        ctx.rotate(frag.angle);
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = "#3498db";
+        ctx.beginPath();
+        ctx.arc(0, 0, frag.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
+    }
+
+    // Update explosion particles.
+    function updateExplosions(deltaTime) {
+      for (let i = explosions.length - 1; i >= 0; i--) {
+        const p = explosions[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.elapsed += deltaTime;
+        if (p.elapsed >= p.life) {
+          explosions.splice(i, 1);
+        }
+      }
+    }
+    function drawExplosions() {
+      explosions.forEach(p => {
+        const alpha = 1 - (p.elapsed / p.life);
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
+    }
+
+    // Update twinkling stars.
+    function updateStars(deltaTime) {
+      stars.forEach(star => {
+        star.brightness += star.flickerSpeed * deltaTime;
+        if (star.brightness > 1 || star.brightness < 0.5) {
+          star.flickerSpeed *= -1;
+        }
+      });
+    }
+    function drawStars() {
+      stars.forEach(star => {
+        ctx.save();
+        ctx.globalAlpha = star.brightness;
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(star.x, star.y, 2, 2);
+        ctx.restore();
+      });
+    }
+
+    // Comets (optional background effect).
+    function maybeSpawnComet(deltaTime) {
+      if (Math.random() < config.comet.spawnProbability) {
+        comets.push({
+          x: -50,
+          y: random(0, HEIGHT / 2),
+          vx: random(config.comet.speedRange[0], config.comet.speedRange[1]),
+          vy: random(1, 3),
+          length: random(config.comet.lengthRange[0], config.comet.lengthRange[1]),
+          life: config.comet.life,
+          elapsed: 0
+        });
+      }
+    }
+    function updateComets(deltaTime) {
+      maybeSpawnComet(deltaTime);
+      for (let i = comets.length - 1; i >= 0; i--) {
+        const c = comets[i];
+        c.x += c.vx;
+        c.y += c.vy;
+        c.elapsed += deltaTime;
+        if (c.elapsed >= c.life || c.x > WIDTH + 50) {
+          comets.splice(i, 1);
+        }
+      }
+    }
+    function drawComets() {
+      comets.forEach(c => {
+        const alpha = 1 - (c.elapsed / c.life);
+        ctx.save();
+        ctx.globalAlpha = alpha * 0.3;
+        ctx.strokeStyle = "#fff";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(c.x, c.y);
+        ctx.lineTo(c.x - c.length, c.y - c.length * 0.5);
+        ctx.stroke();
+        ctx.restore();
+      });
+    }
+
+    // Draw shield if it exists.
+    function drawShield() {
+      if (shield) {
+        const shieldRadius = planet.radius + shieldOffset;
+        ctx.save();
+        ctx.strokeStyle = "#00ffff";
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(planet.x, planet.y, shieldRadius, 0, Math.PI * 2);
+        ctx.stroke();
+        const shieldHealthPercent = shield.health / shield.maxHealth;
+        ctx.font = "16px sans-serif";
+        ctx.fillStyle = "#00ffff";
+        ctx.textAlign = "center";
+        ctx.fillText(`Shield: ${(shieldHealthPercent * 100).toFixed(0)}%`, planet.x, planet.y + shieldRadius + 20);
+        ctx.restore();
+      }
+    }
+
+    // Update cannons so newly purchased cannons appear right away.
+    function updateCannons(deltaTime) {
+      if (shield && shield.cannons) {
+        shield.cannons.forEach(cannon => {
+          cannon.cooldown -= deltaTime;
+          const shieldRadius = planet.radius + shieldOffset;
+          cannon.x = planet.x + shieldRadius * Math.cos(cannon.angle);
+          cannon.y = planet.y + shieldRadius * Math.sin(cannon.angle);
+
+          // If cannon is cooled down, try to find a target if not targeting yet.
+          if (cannon.cooldown <= 0) {
+            if (!cannon.target) {
+              let nearest = null;
+              let nearestDist = Infinity;
+              // Only target asteroids not already targeted by another cannon.
+              for (let i = 0; i < asteroids.length; i++) {
+                const a = asteroids[i];
+                let alreadyTargeted = false;
+                shield.cannons.forEach(other => {
+                  if (other !== cannon && other.target === a) {
+                    alreadyTargeted = true;
+                  }
+                });
+                if (alreadyTargeted) continue;
+                // Is it in range?
+                const dist = Math.hypot(cannon.x - a.x, cannon.y - a.y);
+                if (dist < config.cannon.range && dist < nearestDist) {
+                  nearest = a;
+                  nearestDist = dist;
+                }
+              }
+              if (nearest) {
+                cannon.target = nearest;
+                cannon.targetTime = 0;
+              }
+            } else {
+              // Cannon is targeting something, increment targeting time.
+              cannon.targetTime += deltaTime;
+              // After targeting delay, fire if still in range.
+              if (cannon.targetTime >= config.cannon.targetingDelay) {
+                const dist = Math.hypot(cannon.x - cannon.target.x, cannon.y - cannon.target.y);
+                if (dist < config.cannon.range) {
+                  shatterAsteroid(cannon.target);
+                  // Remove that asteroid from the array.
+                  for (let i = 0; i < asteroids.length; i++) {
+                    if (asteroids[i] === cannon.target) {
+                      asteroids.splice(i, 1);
+                      break;
+                    }
+                  }
+                  cannon.cooldown = config.cannon.cooldownTime;
+                }
+                cannon.target = null;
+              }
+            }
+          }
+        });
+      }
+    }
+    function drawCannons() {
+      if (shield && shield.cannons) {
+        shield.cannons.forEach(cannon => {
+          ctx.save();
+          // Semi-transparent if cannon is on cooldown.
+          ctx.globalAlpha = (cannon.cooldown > 0) ? 0.5 : 1;
+          ctx.fillStyle = "#ff0";
+          ctx.beginPath();
+          ctx.arc(cannon.x, cannon.y, 5, 0, Math.PI * 2);
+          ctx.fill();
+          // If targeting an asteroid but not fired yet, draw a line to target.
+          if (cannon.target && cannon.targetTime < config.cannon.targetingDelay) {
+            ctx.strokeStyle = "#ff0";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(cannon.x, cannon.y);
+            ctx.lineTo(cannon.target.x, cannon.target.y);
+            ctx.stroke();
+          }
+          ctx.restore();
+        });
+      }
+    }
+
+    // Draw planet with a health bar and any moon rebuild info.
+    function drawPlanet() {
+      if (gameState !== "exploding" && gameState !== "gameover") {
+        ctx.beginPath();
+        ctx.arc(planet.x, planet.y, planet.radius, 0, Math.PI * 2);
+        ctx.fillStyle = "#3498db";
+        ctx.fill();
+      }
+      // Planet health bar
+      const barWidth = 80, barHeight = 10;
+      const healthPercent = planetHealth / planetMaxHealth;
+      ctx.fillStyle = "#e74c3c";
+      ctx.fillRect(planet.x - barWidth/2, planet.y - planet.radius - 20, barWidth * healthPercent, barHeight);
+      ctx.strokeStyle = "#fff";
+      ctx.strokeRect(planet.x - barWidth/2, planet.y - planet.radius - 20, barWidth, barHeight);
+
+      // If moon rebuilding, show progress bar & timer
+      if (gameState === "moonRebuild") {
+        const rebuildBarWidth = 80, rebuildBarHeight = 10;
+        const progress = moonRebuildProgress / config.rebuild.requiredClicks;
+        ctx.fillStyle = "#2ecc71";
+        ctx.fillRect(planet.x - rebuildBarWidth/2, planet.y - planet.radius - 40, rebuildBarWidth * progress, rebuildBarHeight);
+        ctx.strokeStyle = "#fff";
+        ctx.strokeRect(planet.x - rebuildBarWidth/2, planet.y - planet.radius - 40, rebuildBarWidth, rebuildBarHeight);
+
+        const timeLeft = Math.max(0, config.rebuild.duration - moonRebuildTime);
+        const secondsLeft = (timeLeft / 1000).toFixed(1);
+        ctx.font = "16px sans-serif";
+        ctx.fillStyle = "#fff";
+        ctx.textAlign = "center";
+        ctx.fillText(`Time: ${secondsLeft}s`, planet.x, planet.y - planet.radius - 50);
+      }
+
+      // Draw shield if purchased
+      drawShield();
+    }
+
+    // Draw the moon unless destroyed.
+    function drawMoon() {
+      if (gameState !== "moonRebuild" && gameState !== "exploding" && gameState !== "gameover") {
+        const moonX = planet.x + moon.orbitRadius * Math.cos(moon.angle);
+        const moonY = planet.y + moon.orbitRadius * Math.sin(moon.angle);
+        ctx.beginPath();
+        ctx.arc(moonX, moonY, moon.radius, 0, Math.PI * 2);
+        ctx.fillStyle = "#bdc3c7";
+        ctx.fill();
+      }
+    }
+
+    // Draw asteroids.
+    function drawAsteroids() {
+      asteroids.forEach(asteroid => {
+        ctx.save();
+        ctx.translate(asteroid.x, asteroid.y);
+        ctx.rotate(asteroid.angle);
+        ctx.beginPath();
+        ctx.moveTo(asteroid.shape[0].x, asteroid.shape[0].y);
+        for (let i = 1; i < asteroid.shape.length; i++) {
+          ctx.lineTo(asteroid.shape[i].x, asteroid.shape[i].y);
+        }
+        ctx.closePath();
+        ctx.fillStyle = "#e74c3c";
+        ctx.fill();
+        ctx.restore();
+      });
+    }
+
+    // Update asteroids (position, remove off-screen).
+    function updateAsteroids(deltaTime) {
+      for (let i = asteroids.length - 1; i >= 0; i--) {
+        const a = asteroids[i];
+        a.x += a.vx;
+        a.y += a.vy;
+        a.angle += a.angularVelocity;
+        if (a.x < -100 || a.x > WIDTH + 100 || a.y < -100 || a.y > HEIGHT + 100) {
+          asteroids.splice(i, 1);
+        }
+      }
+    }
+
+    // Update debris (shattered pieces from destroyed asteroids).
+    function updateDebris(deltaTime) {
+      for (let i = debrisPieces.length - 1; i >= 0; i--) {
+        const d = debrisPieces[i];
+        d.x += d.vx;
+        d.y += d.vy;
+        d.angle += d.angularVelocity;
+        d.elapsed += deltaTime;
+        d.scale = Math.max(1 - d.elapsed / d.duration, 0);
+        if (d.elapsed >= d.duration) {
+          debrisPieces.splice(i, 1);
+        }
+      }
+    }
+    function drawDebris() {
+      debrisPieces.forEach(d => {
+        ctx.save();
+        ctx.translate(d.x, d.y);
+        ctx.rotate(d.angle);
+        ctx.scale(d.scale, d.scale);
+        ctx.beginPath();
+        ctx.moveTo(d.shape[0].x, d.shape[0].y);
+        for (let i = 1; i < d.shape.length; i++) {
+          ctx.lineTo(d.shape[i].x, d.shape[i].y);
+        }
+        ctx.closePath();
+        ctx.fillStyle = "#e74c3c";
+        ctx.fill();
+        ctx.restore();
+      });
+    }
+
+    // Update reticles (pulsating circles at click).
+    function updateReticles(deltaTime) {
+      for (let i = reticles.length - 1; i >= 0; i--) {
+        const r = reticles[i];
+        r.elapsed += deltaTime;
+        if (r.elapsed > r.duration) {
+          reticles.splice(i, 1);
+        }
+      }
+    }
+    function drawReticles() {
+      reticles.forEach(r => {
+        const progress = r.elapsed / r.duration;
+        const radius = 10 + progress * 50;
+        const alpha = 1 - progress;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.beginPath();
+        ctx.arc(r.x, r.y, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = "#f1c40f";
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        ctx.restore();
+      });
+    }
+
+    // Update the moon position.
+    function updateMoon(deltaTime) {
+      if (gameState === "playing") {
+        previousMoonAngle = moon.angle;
+        moon.angle += moon.speed;
+        if (moon.angle >= Math.PI * 2) {
+          moon.angle -= Math.PI * 2;
+        }
+        // If we passed 2π, we completed one orbit (a "day").
+        if (previousMoonAngle > moon.angle) {
+          moonOrbitCount++;
+          if (moonOrbitCount >= config.orbitsPerYear) {
+            // End of year => pause game, show overlay + upgrade menu
+            overlayMessage.innerHTML = `Survived Year ${currentYear}`;
+            overlayMessage.style.display = "block";
+            upgradeMenu.style.display = "block";
+            gameState = "yearEnd";
+          }
+        }
+      }
+    }
+
+    // Collision checks (skip if paused at yearEnd or upgrading).
+    function checkCollisions() {
+      if (gameState !== "playing" && gameState !== "moonRebuild") {
+        // If paused or yearEnd, skip collisions
+        return;
+      }
+
+      let moonX, moonY;
+      if (gameState !== "moonRebuild") {
+        moonX = planet.x + moon.orbitRadius * Math.cos(moon.angle);
+        moonY = planet.y + moon.orbitRadius * Math.sin(moon.angle);
+      }
+      for (let i = asteroids.length - 1; i >= 0; i--) {
+        const a = asteroids[i];
+        const distToPlanet = Math.hypot(a.x - planet.x, a.y - planet.y);
+
+        // Shield collision.
+        if (shield) {
+          const shieldRadius = planet.radius + shieldOffset;
+          if (distToPlanet < shieldRadius + a.radius && distToPlanet >= planet.radius) {
+            shield.health -= a.radius;
+            if (shield.health <= 0) {
+              shield = null;
+            } else if (shield.cannons) {
+              shield.cannons = shield.cannons.filter(cannon => {
+                const d = Math.hypot(cannon.x - a.x, cannon.y - a.y);
+                return d >= config.cannon.hitThreshold;
+              });
+            }
+            createExplosion(a.x, a.y, config.explosion.planetHitMultiplier);
+            shakeIntensity += config.shake.planetHit;
+            asteroids.splice(i, 1);
+            continue;
+          }
+        }
+        // Planet collision.
+        if (distToPlanet < planet.radius + a.radius) {
+          if (shield) {
+            shield.health -= a.radius;
+            if (shield.health <= 0) {
+              shield = null;
+            }
+          } else {
+            planetHealth -= a.radius;
+          }
+          createExplosion(a.x, a.y, config.explosion.planetHitMultiplier);
+          shakeIntensity += config.shake.planetHit;
+          asteroids.splice(i, 1);
+          continue;
+        }
+        // Moon collision.
+        if (gameState !== "moonRebuild") {
+          const distToMoon = Math.hypot(a.x - moonX, a.y - moonY);
+          if (distToMoon < moon.radius + a.radius) {
+            gameState = "moonRebuild";
+            moonRebuildTime = 0;
+            moonRebuildProgress = 0;
+            asteroids.splice(i, 1);
+            break;
+          }
+        }
+      }
+      // If planet destroyed, trigger explosion
+      if (planetHealth <= 0 && gameState !== "exploding") {
+        gameState = "exploding";
+        asteroids.length = 0;
+        generatePlanetFragments();
+      }
+    }
+
+    // Main game loop.
+    function gameLoop(timestamp) {
+      const deltaTime = timestamp - lastTime;
+      lastTime = timestamp;
+      updateShake(deltaTime);
+
+      // Always update cannons so they appear immediately on purchase
+      if (shield && shield.cannons) {
+        updateCannons(deltaTime);
+      }
+
+      // If in "playing" or "moonRebuild" => run normal game logic
+      // If in "yearEnd" => game is paused, skip spawning or collisions
+      if (gameState === "playing" || gameState === "moonRebuild") {
+        asteroidTimer += deltaTime;
+        if (asteroidTimer > asteroidSpawnInterval) {
+          spawnAsteroid();
+          asteroidTimer = 0;
+        }
+        updateAsteroids(deltaTime);
+        updateDebris(deltaTime);
+        updateReticles(deltaTime);
+        updateExplosions(deltaTime);
+        updateComets(deltaTime);
+        updateMoon(deltaTime);
+        checkCollisions();
+        // Moon rebuild logic
+        if (gameState === "moonRebuild") {
+          moonRebuildTime += deltaTime;
+          if (moonRebuildTime > config.rebuild.duration) {
+            planetHealth = 0;
+            gameState = "exploding";
+            asteroids.length = 0;
+            generatePlanetFragments();
+          }
+        }
+      }
+
+      // Normal drawing
+      ctx.save();
+      applyShake();
+      ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+      drawStars();
+      drawComets();
+
+      if (gameState === "exploding") {
+        updatePlanetFragments(deltaTime);
+        drawPlanetFragments();
+        if (planetFragments.length === 0) {
+          gameState = "gameover";
+          overlayButton.textContent = "Game Over - Restart";
+          overlayButton.style.display = "block";
+        }
+      } else {
+        drawPlanet();
+        drawMoon();
+        if (shield) drawShield();
+      }
+      drawAsteroids();
+      drawDebris();
+      drawExplosions();
+      drawReticles();
+      if (shield && shield.cannons) drawCannons();
+      ctx.restore();
+
+      // Stats on the left column
+      uiDiv.innerHTML = `
+        Year: ${currentYear}<br>
+        Day: ${moonOrbitCount} / ${config.orbitsPerYear}<br>
+        Health: ${Math.max(planetHealth, 0).toFixed(0)}<br>
+        Shards: ${shards}<br>
+        Score: ${score}
+        ${gameState === "moonRebuild" ? `<br>Rebuild: ${moonRebuildProgress}/${config.rebuild.requiredClicks}` : ""}
+      `;
+
+      requestAnimationFrame(gameLoop);
+    }
+    requestAnimationFrame(gameLoop);
+
+    // When the user clicks Start Next Year, hide overlay & upgrade menu, resume game
+    nextYearButton.addEventListener("click", function() {
+      currentYear++;
+      moonOrbitCount = 0;
+      asteroids.length = 0;
+      debrisPieces.length = 0;
+      reticles.length = 0;
+      explosions.length = 0;
+      comets.length = 0;
+      planetFragments.length = 0;
+      asteroidSpawnInterval = Math.max(
+        config.minAsteroidSpawnInterval,
+        config.baseAsteroidSpawnInterval - (currentYear - 1) * 100
+      );
+      gameState = "playing";
+      upgradeMenu.style.display = "none";
+      overlayMessage.style.display = "none";
+    });
+
+    // Upgrade Menu Functions (invoked automatically at year end).
+    function updateUpgradeMenu() {
+      shardDisplay.innerHTML = `<p>Shards: ${shards}</p>`;
+      let optionsHTML = "";
+      const missingHealth = planetMaxHealth - planetHealth;
+      // Round up the cost
+      const restoreCost = Math.ceil(missingHealth * config.upgrades.restoreHealthCostPerPoint);
+      optionsHTML += `<button onclick="upgradeRestoreHealth()">Restore Health (${restoreCost} Shards)</button><br>`;
+      optionsHTML += `<button onclick="upgradeIncreaseMaxHealth()">Increase Max Health (+${config.upgrades.increaseMaxHealthBonus}) (Cost: ${config.upgrades.increaseMaxHealthCost} Shards)</button><br>`;
+      if (!shield) {
+        optionsHTML += `<button onclick="upgradeBuyShield()">Buy Shield (Cost: ${config.upgrades.buyShieldCost} Shards)</button><br>`;
+      } else {
+        optionsHTML += `<button onclick="upgradeRestoreShield()">Restore Shield (Cost: ${config.upgrades.restoreShieldCost} Shards)</button><br>`;
+        if (shield.cannons.length < 20) {
+          optionsHTML += `<button onclick="upgradeBuyCannon()">Buy Cannon (Cost: ${config.upgrades.buyCannonCost} Shards)</button><br>`;
+        }
+      }
+      upgradeOptionsDiv.innerHTML = optionsHTML;
+    }
+
+    // Upgrade handlers
+    function upgradeRestoreHealth() {
+      const missingHealth = planetMaxHealth - planetHealth;
+      const cost = Math.ceil(missingHealth * config.upgrades.restoreHealthCostPerPoint);
+      if (shards >= cost && missingHealth > 0) {
+        shards -= cost;
+        planetHealth = planetMaxHealth;
+        updateUpgradeMenu();
+      }
+    }
+    function upgradeIncreaseMaxHealth() {
+      if (shards >= config.upgrades.increaseMaxHealthCost) {
+        shards -= config.upgrades.increaseMaxHealthCost;
+        planetMaxHealth += config.upgrades.increaseMaxHealthBonus;
+        planetHealth = planetMaxHealth;
+        updateUpgradeMenu();
+      }
+    }
+    function upgradeBuyShield() {
+      if (shards >= config.upgrades.buyShieldCost) {
+        shards -= config.upgrades.buyShieldCost;
+        shield = { health: 100, maxHealth: 100, cannons: [] };
+        updateUpgradeMenu();
+      }
+    }
+    function upgradeRestoreShield() {
+      if (shield && shards >= config.upgrades.restoreShieldCost) {
+        shards -= config.upgrades.restoreShieldCost;
+        shield.health = shield.maxHealth;
+        updateUpgradeMenu();
+      }
+    }
+    function upgradeBuyCannon() {
+      if (shield && shield.cannons.length < 20 && shards >= config.upgrades.buyCannonCost) {
+        shards -= config.upgrades.buyCannonCost;
+        const cannon = { angle: random(0, Math.PI * 2), cooldown: 0, x: 0, y: 0, target: null, targetTime: 0 };
+        shield.cannons.push(cannon);
+        const count = shield.cannons.length;
+        shield.cannons.forEach((c, i) => {
+          c.angle = (i / count) * Math.PI * 2;
+        });
+        updateUpgradeMenu();
+      }
+    }
+
+    // Handle canvas clicks (shoot asteroids, or rebuild moon).
+    canvas.addEventListener("click", function(e) {
+      const rect = canvas.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
+      addReticle(clickX, clickY);
+
+      // If playing or rebuilding, let user shoot asteroids
+      if (gameState === "playing" || gameState === "moonRebuild") {
+        for (let i = asteroids.length - 1; i >= 0; i--) {
+          const a = asteroids[i];
+          if (Math.hypot(clickX - a.x, clickY - a.y) < config.reticle.effectiveRadius) {
+            shatterAsteroid(a);
+            asteroids.splice(i, 1);
+            break;
+          }
+        }
+      }
+      // If rebuilding moon, let user click planet to help rebuild
+      if (gameState === "moonRebuild") {
+        if (Math.hypot(clickX - planet.x, clickY - planet.y) < planet.radius) {
+          moonRebuildProgress++;
+          if (moonRebuildProgress >= config.rebuild.requiredClicks) {
+            gameState = "playing";
+          }
+        }
+      }
+    });
+
+    // Start Game overlay button (also used for restart).
+    overlayButton.addEventListener("click", function() {
+      if (gameState === "start" || gameState === "gameover") {
+        // Reset the entire game
+        currentYear = 1;
+        planetMaxHealth = config.planet.maxHealth;
+        planetHealth = planetMaxHealth;
+        moon = {
+          radius: moonOriginal.radius,
+          orbitRadius: moonOriginal.orbitRadius,
+          angle: 0,
+          speed: moonOriginal.speed
+        };
+        moonOrbitCount = 0;
+        asteroids.length = 0;
+        debrisPieces.length = 0;
+        reticles.length = 0;
+        explosions.length = 0;
+        comets.length = 0;
+        planetFragments.length = 0;
+        asteroidSpawnInterval = config.baseAsteroidSpawnInterval;
+        score = 0;
+        shards = 0;
+        shield = null;
+        gameState = "playing";
+        overlayButton.style.display = "none";
+        upgradeMenu.style.display = "none";
+        overlayMessage.style.display = "none";
+      }
+    });
+
+    // Next Year button: hide overlay & menu, resume game
+    nextYearButton.addEventListener("click", function() {
+      currentYear++;
+      moonOrbitCount = 0;
+      asteroids.length = 0;
+      debrisPieces.length = 0;
+      reticles.length = 0;
+      explosions.length = 0;
+      comets.length = 0;
+      planetFragments.length = 0;
+      asteroidSpawnInterval = Math.max(
+        config.minAsteroidSpawnInterval,
+        config.baseAsteroidSpawnInterval - (currentYear - 1) * 100
+      );
+      gameState = "playing";
+      upgradeMenu.style.display = "none";
+      overlayMessage.style.display = "none";
+    });
+
+    // Start game button is shown initially
+    overlayButton.style.display = "block";
+  </script>
+</body>
+</html>
